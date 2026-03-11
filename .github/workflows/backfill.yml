@@ -1,7 +1,7 @@
   name: Backfill Contributions
 
    on:
-     workflow_dispatch:          # 仅手动触发，不会自动运行
+     workflow_dispatch:          # 仅手动触发，不会自动运行.二次尝试  
 
    permissions:
      contents: write

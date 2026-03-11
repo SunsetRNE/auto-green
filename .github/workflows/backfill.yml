@@ -1,46 +1,162 @@
-  name: Backfill Contributions
+name: Backfill Contributions
 
-   on:
-     workflow_dispatch:          # 仅手动触发，不会自动运行.二次尝试  
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: '开始日期 (YYYY-MM-DD)，留空则自动计算为一年前'
+        required: false
+        default: ''
+      end_date:
+        description: '结束日期 (YYYY-MM-DD)，留空则自动计算为昨天'
+        required: false
+        default: ''
+      dry_run:
+        description: '仅测试运行，不实际推送 (dry-run)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      force_push:
+        description: '是否强制推送 (--force-with-lease)？慎用！'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
-   permissions:
-     contents: write
+permissions:
+  contents: write
 
-   jobs:
-     backfill:
-       runs-on: ubuntu-latest
-       steps:
-         - uses: actions/checkout@v5
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-         - name: Generate past commits
-           run: |
-             # ===== 请修改以下两行为你的 GitHub 用户名和已验证邮箱 =====
-             git config user.name "SunsetRNE"
-             git config user.email "z100o190zgxc@163.com"
-             # ======================================================
+      - name: Configure Git
+        run: |
+          git config user.name "SunsetRNE"
+          git config user.email "z100o190zgxc@163.com"
+          echo "Git 用户配置完成："
+          git config user.name
+          git config user.email
 
-             BRANCH_NAME="${{ github.ref_name }}"
-             echo "当前分支: $BRANCH_NAME"
-             START_DATE=$(date -d "1 year ago" +%Y-%m-%d)
-             END_DATE=$(date -d "yesterday" +%Y-%m-%d)
-             echo "开始日期: $START_DATE"
-             echo "结束日期: $END_DATE"
+      - name: 检查邮箱是否已验证
+        run: |
+          # 通过 GitHub API 检查邮箱验证状态（需使用 GITHUB_TOKEN）
+          EMAIL="z100o190zgxc@163.com"
+          RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/user/emails")
+          if echo "$RESPONSE" | grep -q "\"email\":\"$EMAIL\",.*\"verified\":true"; then
+            echo "✅ 邮箱 $EMAIL 已验证"
+          else
+            echo "⚠️ 警告：邮箱 $EMAIL 未在 GitHub 验证，提交将不会计入贡献！"
+            echo "请前往 https://github.com/settings/emails 验证此邮箱。"
+          fi
 
-             CURRENT_DATE="$START_DATE"
-             END_PLUS_ONE=$(date -d "$END_DATE + 1 day" +%Y-%m-%d)
+      - name: 计算日期范围
+        id: dates
+        run: |
+          # 处理开始日期
+          if [[ -n "${{ github.event.inputs.start_date }}" ]]; then
+            START="${{ github.event.inputs.start_date }}"
+          else
+            START=$(date -d "1 year ago" +%Y-%m-%d)
+          fi
 
-             while [ "$CURRENT_DATE" != "$END_PLUS_ONE" ]; do
-               echo "处理日期: $CURRENT_DATE"
-               echo "Backfill commit on $CURRENT_DATE" >> activity.log
-               git add activity.log
-               git commit --date="$CURRENT_DATE 12:00:00" -m "chore: backfill $CURRENT_DATE"
-               echo "已提交 $CURRENT_DATE"
-               CURRENT_DATE=$(date -d "$CURRENT_DATE + 1 day" +%Y-%m-%d)
-             done
-             echo "所有历史提交已生成"
+          # 处理结束日期
+          if [[ -n "${{ github.event.inputs.end_date }}" ]]; then
+            END="${{ github.event.inputs.end_date }}"
+          else
+            END=$(date -d "yesterday" +%Y-%m-%d)
+          fi
 
-         - name: Push changes safely
-           run: |
-             BRANCH_NAME="${{ github.ref_name }}"
-             git pull --rebase origin "$BRANCH_NAME"
-             git push origin "$BRANCH_NAME"
+          # 验证日期格式
+          if ! date -d "$START" >/dev/null 2>&1; then
+            echo "❌ 无效的开始日期: $START"
+            exit 1
+          fi
+          if ! date -d "$END" >/dev/null 2>&1; then
+            echo "❌ 无效的结束日期: $END"
+            exit 1
+          fi
+
+          # 确保开始日期不晚于结束日期
+          if [[ "$START" > "$END" ]]; then
+            echo "❌ 开始日期不能晚于结束日期"
+            exit 1
+          fi
+
+          echo "start=$START" >> $GITHUB_OUTPUT
+          echo "end=$END" >> $GITHUB_OUTPUT
+          echo "📅 日期范围: $START 到 $END"
+
+      - name: 生成历史提交 (干运行模式仅输出)
+        run: |
+          START="${{ steps.dates.outputs.start }}"
+          END="${{ steps.dates.outputs.end }}"
+          DRY_RUN="${{ github.event.inputs.dry_run }}"
+
+          echo "📝 开始处理日期范围: $START 到 $END"
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "⚠️ 当前为干运行模式，不会生成实际提交"
+          fi
+
+          # 清空或创建 activity.log
+          > activity.log
+
+          current="$START"
+          while [[ "$current" != $(date -d "$END + 1 day" +%Y-%m-%d) ]]; do
+            echo "🔨 处理日期: $current"
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "   (干运行) 模拟提交 $current"
+            else
+              echo "Backfill commit on $current" >> activity.log
+              git add activity.log
+              if git commit --date="$current 12:00:00" -m "chore: backfill $current"; then
+                echo "   ✅ 已提交 $current"
+              else
+                echo "   ⚠️ 提交失败，可能该日期已存在提交？跳过"
+              fi
+            fi
+            current=$(date -d "$current + 1 day" +%Y-%m-%d)
+          done
+
+          echo "✅ 所有日期处理完成"
+
+      - name: 推送更改
+        if: github.event.inputs.dry_run == 'false'
+        run: |
+          BRANCH_NAME="${{ github.ref_name }}"
+          FORCE_PUSH="${{ github.event.inputs.force_push }}"
+
+          # 先获取远程最新状态
+          git fetch origin "$BRANCH_NAME"
+
+          if [[ "$FORCE_PUSH" == "true" ]]; then
+            echo "⚠️ 使用 --force-with-lease 推送（可能覆盖他人的更改）"
+            git push --force-with-lease origin "$BRANCH_NAME"
+          else
+            # 尝试普通推送，如果失败则提示用户开启强制推送
+            echo "尝试普通推送..."
+            if git push origin "$BRANCH_NAME"; then
+              echo "✅ 推送成功"
+            else
+              echo "❌ 推送失败，可能是远程分支有更新。"
+              echo "建议操作："
+              echo "1. 检查是否有其他人同时推送"
+              echo "2. 如需强制覆盖，请重新运行工作流并设置 force_push=true"
+              exit 1
+            fi
+          fi
+
+      - name: 完成提示
+        if: always()
+        run: |
+          echo "🎉 工作流执行完毕"
+          echo "请前往 GitHub 查看贡献图更新（可能需要几分钟刷新）"

@@ -1,16 +1,24 @@
-name: Backfill Contributions
+name: Backfill Contributions (Smart)
 
 on:
   workflow_dispatch:
     inputs:
       start_date:
-        description: '开始日期 (YYYY-MM-DD)，留空则自动计算为一年前'
+        description: '开始日期 (YYYY-MM-DD)，留空则自动计算（若勾选“从账号创建开始”则忽略此值）'
         required: false
         default: ''
       end_date:
         description: '结束日期 (YYYY-MM-DD)，留空则自动计算为昨天'
         required: false
         default: ''
+      from_account_creation:
+        description: '从账号创建日期开始回填（将忽略 start_date）'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
       dry_run:
         description: '仅测试运行，不实际推送 (dry-run)'
         required: false
@@ -48,7 +56,6 @@ jobs:
 
       - name: 检查邮箱是否已验证
         run: |
-          # 通过 GitHub API 检查邮箱验证状态（需使用 GITHUB_TOKEN）
           EMAIL="z100o190zgxc@163.com"
           RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/user/emails")
@@ -59,17 +66,38 @@ jobs:
             echo "请前往 https://github.com/settings/emails 验证此邮箱。"
           fi
 
+      - name: 获取账号创建日期（如果选择了“从账号创建开始”）
+        id: account_creation
+        if: github.event.inputs.from_account_creation == 'true'
+        run: |
+          USER_INFO=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/user")
+          CREATED_AT=$(echo "$USER_INFO" | jq -r '.created_at')
+          if [[ "$CREATED_AT" == "null" || -z "$CREATED_AT" ]]; then
+            echo "❌ 无法获取账号创建时间"
+            exit 1
+          fi
+          CREATED_DATE=$(date -d "$CREATED_AT" +%Y-%m-%d)
+          echo "📅 账号创建日期: $CREATED_DATE"
+          echo "creation_date=$CREATED_DATE" >> $GITHUB_OUTPUT
+
       - name: 计算日期范围
         id: dates
         run: |
-          # 处理开始日期
-          if [[ -n "${{ github.event.inputs.start_date }}" ]]; then
-            START="${{ github.event.inputs.start_date }}"
+          if [[ "${{ github.event.inputs.from_account_creation }}" == "true" ]]; then
+            START="${{ steps.account_creation.outputs.creation_date }}"
+            if [[ -z "$START" ]]; then
+              echo "❌ 账号创建日期获取失败"
+              exit 1
+            fi
           else
-            START=$(date -d "1 year ago" +%Y-%m-%d)
+            if [[ -n "${{ github.event.inputs.start_date }}" ]]; then
+              START="${{ github.event.inputs.start_date }}"
+            else
+              START=$(date -d "1 year ago" +%Y-%m-%d)
+            fi
           fi
 
-          # 处理结束日期
           if [[ -n "${{ github.event.inputs.end_date }}" ]]; then
             END="${{ github.event.inputs.end_date }}"
           else
@@ -86,7 +114,6 @@ jobs:
             exit 1
           fi
 
-          # 确保开始日期不晚于结束日期
           if [[ "$START" > "$END" ]]; then
             echo "❌ 开始日期不能晚于结束日期"
             exit 1
@@ -96,53 +123,70 @@ jobs:
           echo "end=$END" >> $GITHUB_OUTPUT
           echo "📅 日期范围: $START 到 $END"
 
-      - name: 生成历史提交 (干运行模式仅输出)
+      - name: 生成缺失的历史提交（跳过已有日期的提交）
+        id: generate
         run: |
           START="${{ steps.dates.outputs.start }}"
           END="${{ steps.dates.outputs.end }}"
           DRY_RUN="${{ github.event.inputs.dry_run }}"
 
-          echo "📝 开始处理日期范围: $START 到 $END"
+          echo "📝 开始检查日期范围: $START 到 $END"
           if [[ "$DRY_RUN" == "true" ]]; then
             echo "⚠️ 当前为干运行模式，不会生成实际提交"
           fi
 
-          # 清空或创建 activity.log
-          > activity.log
+          # 用于统计
+          total_days=0
+          missing_days=0
 
           current="$START"
           while [[ "$current" != $(date -d "$END + 1 day" +%Y-%m-%d) ]]; do
-            echo "🔨 处理日期: $current"
-            if [[ "$DRY_RUN" == "true" ]]; then
-              echo "   (干运行) 模拟提交 $current"
+            total_days=$((total_days + 1))
+            echo "🔍 检查日期: $current"
+
+            # 检查当前日期是否已有提交（在当前分支）
+            # 使用 git log 统计该日期范围内的提交次数
+            commit_count=$(git log --after="$current 00:00:00" --before="$current 23:59:59" --oneline 2>/dev/null | wc -l)
+
+            if [[ $commit_count -gt 0 ]]; then
+              echo "   ✅ 该日期已有 $commit_count 次提交，跳过"
             else
-              echo "Backfill commit on $current" >> activity.log
-              git add activity.log
-              if git commit --date="$current 12:00:00" -m "chore: backfill $current"; then
-                echo "   ✅ 已提交 $current"
+              missing_days=$((missing_days + 1))
+              echo "   ❌ 该日期无提交，需要生成"
+
+              if [[ "$DRY_RUN" != "true" ]]; then
+                # 生成提交
+                echo "Backfill commit on $current" >> activity.log
+                git add activity.log
+                if git commit --date="$current 12:00:00" -m "chore: backfill $current"; then
+                  echo "   ✅ 已生成提交 $current"
+                else
+                  echo "   ⚠️ 提交失败，可能该日期已存在提交？但检查时未发现，请手动检查"
+                fi
               else
-                echo "   ⚠️ 提交失败，可能该日期已存在提交？跳过"
+                echo "   (干运行) 将生成提交 $current"
               fi
             fi
+
             current=$(date -d "$current + 1 day" +%Y-%m-%d)
           done
 
-          echo "✅ 所有日期处理完成"
+          echo "📊 统计: 总天数 $total_days，缺失天数 $missing_days"
+          # 将缺失天数存入输出，用于后续判断是否有提交
+          echo "missing=$missing_days" >> $GITHUB_OUTPUT
 
-      - name: 推送更改
-        if: github.event.inputs.dry_run == 'false'
+      - name: 推送更改（仅在非干运行且有新提交时执行）
+        if: github.event.inputs.dry_run == 'false' && steps.generate.outputs.missing > 0
         run: |
           BRANCH_NAME="${{ github.ref_name }}"
           FORCE_PUSH="${{ github.event.inputs.force_push }}"
 
-          # 先获取远程最新状态
           git fetch origin "$BRANCH_NAME"
 
           if [[ "$FORCE_PUSH" == "true" ]]; then
             echo "⚠️ 使用 --force-with-lease 推送（可能覆盖他人的更改）"
             git push --force-with-lease origin "$BRANCH_NAME"
           else
-            # 尝试普通推送，如果失败则提示用户开启强制推送
             echo "尝试普通推送..."
             if git push origin "$BRANCH_NAME"; then
               echo "✅ 推送成功"
@@ -154,6 +198,11 @@ jobs:
               exit 1
             fi
           fi
+
+      - name: 无新提交跳过推送
+        if: github.event.inputs.dry_run == 'false' && steps.generate.outputs.missing == 0
+        run: |
+          echo "✅ 没有发现缺失的日期，无需推送。"
 
       - name: 完成提示
         if: always()

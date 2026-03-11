@@ -1,0 +1,46 @@
+  name: Backfill Contributions
+
+   on:
+     workflow_dispatch:          # 仅手动触发，不会自动运行
+
+   permissions:
+     contents: write
+
+   jobs:
+     backfill:
+       runs-on: ubuntu-latest
+       steps:
+         - uses: actions/checkout@v5
+
+         - name: Generate past commits
+           run: |
+             # ===== 请修改以下两行为你的 GitHub 用户名和已验证邮箱 =====
+             git config user.name "SunsetRNE"
+             git config user.email "z100o190zgxc@163.com"
+             # ======================================================
+
+             BRANCH_NAME="${{ github.ref_name }}"
+             echo "当前分支: $BRANCH_NAME"
+             START_DATE=$(date -d "1 year ago" +%Y-%m-%d)
+             END_DATE=$(date -d "yesterday" +%Y-%m-%d)
+             echo "开始日期: $START_DATE"
+             echo "结束日期: $END_DATE"
+
+             CURRENT_DATE="$START_DATE"
+             END_PLUS_ONE=$(date -d "$END_DATE + 1 day" +%Y-%m-%d)
+
+             while [ "$CURRENT_DATE" != "$END_PLUS_ONE" ]; do
+               echo "处理日期: $CURRENT_DATE"
+               echo "Backfill commit on $CURRENT_DATE" >> activity.log
+               git add activity.log
+               git commit --date="$CURRENT_DATE 12:00:00" -m "chore: backfill $CURRENT_DATE"
+               echo "已提交 $CURRENT_DATE"
+               CURRENT_DATE=$(date -d "$CURRENT_DATE + 1 day" +%Y-%m-%d)
+             done
+             echo "所有历史提交已生成"
+
+         - name: Push changes safely
+           run: |
+             BRANCH_NAME="${{ github.ref_name }}"
+             git pull --rebase origin "$BRANCH_NAME"
+             git push origin "$BRANCH_NAME"

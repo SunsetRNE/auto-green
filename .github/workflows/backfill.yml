@@ -1,8 +1,12 @@
-name: Backfill Contributions (Smart)
+name: Backfill Contributions (Smart + Public API)
 
 on:
   workflow_dispatch:
     inputs:
+      github_username:
+        description: '您的 GitHub 用户名（若勾选“从账号创建开始”则必须填写）'
+        required: false
+        default: ''
       start_date:
         description: '开始日期 (YYYY-MM-DD)，留空则自动计算（若勾选“从账号创建开始”则忽略此值）'
         required: false
@@ -12,7 +16,7 @@ on:
         required: false
         default: ''
       from_account_creation:
-        description: '从账号创建日期开始回填（将忽略 start_date）'
+        description: '从账号创建日期开始回填（将忽略 start_date，且必须填写用户名）'
         required: false
         default: 'false'
         type: choice
@@ -57,26 +61,32 @@ jobs:
       - name: 检查邮箱是否已验证
         run: |
           EMAIL="z100o190zgxc@163.com"
-          RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/user/emails")
-          if echo "$RESPONSE" | grep -q "\"email\":\"$EMAIL\",.*\"verified\":true"; then
-            echo "✅ 邮箱 $EMAIL 已验证"
-          else
-            echo "⚠️ 警告：邮箱 $EMAIL 未在 GitHub 验证，提交将不会计入贡献！"
-            echo "请前往 https://github.com/settings/emails 验证此邮箱。"
-          fi
+          # 使用公开 API 无法验证邮箱，仅提醒用户自行确认
+          echo "请确保邮箱 $EMAIL 已在 GitHub 设置中验证，否则提交不会计入贡献。"
+          echo "验证地址：https://github.com/settings/emails"
 
       - name: 获取账号创建日期（如果选择了“从账号创建开始”）
         id: account_creation
         if: github.event.inputs.from_account_creation == 'true'
         run: |
-          USER_INFO=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/user")
-          CREATED_AT=$(echo "$USER_INFO" | jq -r '.created_at')
-          if [[ "$CREATED_AT" == "null" || -z "$CREATED_AT" ]]; then
-            echo "❌ 无法获取账号创建时间"
+          USERNAME="${{ github.event.inputs.github_username }}"
+          if [[ -z "$USERNAME" ]]; then
+            echo "❌ 您选择了“从账号创建开始”，但未提供用户名。"
+            echo "请在输入框中填写您的 GitHub 用户名。"
             exit 1
           fi
+
+          echo "正在获取用户 $USERNAME 的创建时间..."
+          USER_INFO=$(curl -s "https://api.github.com/users/$USERNAME")
+          CREATED_AT=$(echo "$USER_INFO" | jq -r '.created_at')
+
+          if [[ "$CREATED_AT" == "null" || -z "$CREATED_AT" ]]; then
+            echo "❌ 无法获取账号创建时间，请检查用户名是否正确。"
+            echo "API 返回信息："
+            echo "$USER_INFO" | jq .
+            exit 1
+          fi
+
           CREATED_DATE=$(date -d "$CREATED_AT" +%Y-%m-%d)
           echo "📅 账号创建日期: $CREATED_DATE"
           echo "creation_date=$CREATED_DATE" >> $GITHUB_OUTPUT
@@ -135,7 +145,6 @@ jobs:
             echo "⚠️ 当前为干运行模式，不会生成实际提交"
           fi
 
-          # 用于统计
           total_days=0
           missing_days=0
 
@@ -144,8 +153,6 @@ jobs:
             total_days=$((total_days + 1))
             echo "🔍 检查日期: $current"
 
-            # 检查当前日期是否已有提交（在当前分支）
-            # 使用 git log 统计该日期范围内的提交次数
             commit_count=$(git log --after="$current 00:00:00" --before="$current 23:59:59" --oneline 2>/dev/null | wc -l)
 
             if [[ $commit_count -gt 0 ]]; then
@@ -155,7 +162,6 @@ jobs:
               echo "   ❌ 该日期无提交，需要生成"
 
               if [[ "$DRY_RUN" != "true" ]]; then
-                # 生成提交
                 echo "Backfill commit on $current" >> activity.log
                 git add activity.log
                 if git commit --date="$current 12:00:00" -m "chore: backfill $current"; then
@@ -172,7 +178,6 @@ jobs:
           done
 
           echo "📊 统计: 总天数 $total_days，缺失天数 $missing_days"
-          # 将缺失天数存入输出，用于后续判断是否有提交
           echo "missing=$missing_days" >> $GITHUB_OUTPUT
 
       - name: 推送更改（仅在非干运行且有新提交时执行）

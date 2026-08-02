@@ -205,9 +205,16 @@ jobs:
           current="$START"
           day_index=0
 
+          # 按 author date 构建"日期→提交数"映射。
+          # 注意：--after/--before 按 commit date 过滤，回填提交的 commit date
+          # 是创建时刻，会误判缺失；贡献图按 author date 统计，故用 author date。
+          git log --author="${{ github.event.inputs.git_user_email }}" --date=format:'%Y-%m-%d' --format='%ad' \
+            2>/dev/null | sort | uniq -c > /tmp/existing_counts.txt
+
           while [[ "$current" != $(date -d "$END + 1 day" +%Y-%m-%d) ]]; do
             total_days=$((total_days + 1))
-            commit_count=$(git log --after="$current 00:00:00" --before="$current 23:59:59" --oneline 2>/dev/null | wc -l)
+            commit_count=$(awk -v d="$current" '$2==d {print $1}' /tmp/existing_counts.txt)
+            [ -z "$commit_count" ] && commit_count=0
 
             # 确定目标级别范围
             if [[ "$MODE" == "未来图案提交填充模式" ]]; then

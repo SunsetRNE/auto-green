@@ -118,7 +118,7 @@ jobs:
           echo "end=$END" >> "$GITHUB_OUTPUT"
           echo "📅 最终日期范围：$START 至 $END"
 
-      - name: 生成缺失日期的提交（智能跳过已有提交）
+      - name: 生成缺失日期的提交（按作者日期精确检测）
         id: generate
         run: |
           START="${{ steps.dates.outputs.start }}"
@@ -129,6 +129,14 @@ jobs:
           MISSING_DAYS=0
           CURRENT="$START"
 
+          # 一次性提取该作者所有提交的作者日期（贡献图按 author date 统计）。
+          # 注意：git log 的 --after/--before 按 commit date 过滤，而回填提交
+          # 的 commit date 是创建时刻而非目标日期，会导致已有日期误判为缺失，
+          # 因此这里改用 author date 构建"已有日期集合"。
+          git log --author="$AUTHOR_EMAIL" --date=format:'%Y-%m-%d' --format='%ad' \
+            2>/dev/null | sort -u > /tmp/existing_dates.txt
+          echo "📋 该作者已有提交的日期数：$(wc -l < /tmp/existing_dates.txt)"
+
           while true; do
             CURRENT_TS=$(date -d "$CURRENT" +%s 2>/dev/null || echo "")
             END_TS=$(date -d "$END" +%s)
@@ -137,13 +145,8 @@ jobs:
 
             TOTAL_DAYS=$((TOTAL_DAYS + 1))
             echo -n "🔍 检查日期 $CURRENT ... "
-            # 用邮箱精确匹配该日期是否已有当前作者的提交
-            COMMIT_COUNT=$(git log --author="$AUTHOR_EMAIL" \
-              --after="$CURRENT 00:00:00" --before="$CURRENT 23:59:59" \
-              --oneline 2>/dev/null | wc -l)
-
-            if [ "$COMMIT_COUNT" -gt 0 ]; then
-              echo "✅ 已有 $COMMIT_COUNT 次提交，跳过"
+            if grep -qx "$CURRENT" /tmp/existing_dates.txt; then
+              echo "✅ 已有提交，跳过"
             else
               MISSING_DAYS=$((MISSING_DAYS + 1))
               echo "❌ 无提交，需要生成"

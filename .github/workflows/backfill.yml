@@ -121,6 +121,7 @@ jobs:
       - name: 生成缺失日期的提交（按作者日期精确检测）
         id: generate
         run: |
+          set +e  # 关闭 errexit，所有命令由显式检查控制，避免意外退出
           START="${{ steps.dates.outputs.start }}"
           END="${{ steps.dates.outputs.end }}"
           DRY_RUN="${{ github.event.inputs.dry_run }}"
@@ -142,7 +143,6 @@ jobs:
             END_TS=$(date -d "$END" +%s)
             [ -z "$CURRENT_TS" ] && break
             [ "$CURRENT_TS" -gt "$END_TS" ] && break
-
             TOTAL_DAYS=$((TOTAL_DAYS + 1))
             echo -n "🔍 检查日期 $CURRENT ... "
             if grep -qx "$CURRENT" /tmp/existing_dates.txt; then
@@ -152,7 +152,7 @@ jobs:
               echo "❌ 无提交，需要生成"
               if [ "$DRY_RUN" != "true" ]; then
                 echo "[$CURRENT] Backfilled at $(date -R)" >> activity.log
-                git add activity.log
+                git add activity.log || { echo "   ❌ git add 失败，中止"; exit 1; }
                 if git commit --date="$CURRENT 12:00:00" -m "chore(backfill): add contribution for $CURRENT"; then
                   echo "   ✅ 已生成提交 $CURRENT"
                 else
@@ -162,11 +162,18 @@ jobs:
                 echo "   (干运行) 将生成提交 $CURRENT"
               fi
             fi
-            CURRENT=$(date -I -d "$CURRENT + 1 day")
+            CURRENT=$(date -I -d "$CURRENT + 1 day") || break
           done
           echo "📊 统计：总天数 $TOTAL_DAYS，缺失天数 $MISSING_DAYS"
-          echo "missing=$MISSING_DAYS" >> "$GITHUB_OUTPUT"
-          [ "$DRY_RUN" == "true" ] && echo "⚠️ 当前为干运行模式，未实际生成任何提交。"
+          if [ -n "$GITHUB_OUTPUT" ]; then
+            echo "missing=$MISSING_DAYS" >> "$GITHUB_OUTPUT"
+          else
+            echo "⚠️ GITHUB_OUTPUT 未设置，跳过输出"
+          fi
+          if [ "$DRY_RUN" == "true" ]; then
+            echo "⚠️ 当前为干运行模式，未实际生成任何提交。"
+          fi
+          exit 0
 
       - name: 推送更改（非干运行且有新提交时）
         if: github.event.inputs.dry_run == 'false' && steps.generate.outputs.missing != '0'

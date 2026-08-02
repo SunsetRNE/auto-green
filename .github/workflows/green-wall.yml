@@ -180,6 +180,7 @@ jobs:
       - name: 生成提交
         id: generate
         run: |
+          set +e  # 关闭 errexit，避免意外退出
           MODE="${{ github.event.inputs.mode }}"
           START="${{ steps.dates.outputs.start }}"
           END="${{ steps.dates.outputs.end }}"
@@ -285,7 +286,7 @@ jobs:
                 commit_time="$current $hour:$minute:$second"
                 echo "Backfill commit on $current" >> activity.log
                 git add activity.log
-                git commit --date="$commit_time" -m "chore: backfill $current"
+                git commit --date="$commit_time" -m "chore: backfill $current" || echo "⚠️ 提交 $commit_time 失败，跳过"
                 echo "已生成提交 $commit_time"
                 case "$DELAY" in
                   轻度) sleep 0.2 ;;
@@ -300,7 +301,12 @@ jobs:
           done
 
           echo "统计：总天数 $total_days，已达标跳过 $skipped_days，补充更新 $updated_days，推迟空白 $future_blank_days"
-          echo "updated=$updated_days" >> "$GITHUB_OUTPUT"
+          if [ -n "$GITHUB_OUTPUT" ]; then
+            echo "updated=$updated_days" >> "$GITHUB_OUTPUT"
+          else
+            echo "⚠️ GITHUB_OUTPUT 未设置，跳过输出"
+          fi
+          exit 0
 
       - name: 推送更改
         if: github.event.inputs.dry_run == 'false' && steps.generate.outputs.updated > 0

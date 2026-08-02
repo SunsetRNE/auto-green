@@ -1,28 +1,31 @@
-   name: Auto Commit
+# 每日自动提交工作流
+# 功能：每天定时向 activity.log 追加一条记录并推送，保持贡献图活跃
+name: Auto Commit
 
-   on:
-     schedule:
-       - cron: '30 0 * * *'        # 每天 UTC 00:30（北京时间 8:30）运行
-     workflow_dispatch:             # 允许手动触发
+on:
+  schedule:
+    - cron: '30 0 * * *'   # 每天 UTC 00:30（北京时间 08:30）
+  workflow_dispatch:       # 支持手动触发
 
-   permissions:
-     contents: write
+permissions:
+  contents: write
 
-   jobs:
-     commit:
-       runs-on: ubuntu-latest
-       steps:
-         - uses: actions/checkout@v5
+jobs:
+  commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
 
-         - name: Make changes
-           run: |
-             echo "$(date): Auto commit" >> activity.log
+      - name: 追加活动记录
+        run: |
+          echo "$(date): Auto commit" >> activity.log
 
-         - name: Commit and push
-           run: |
-             git config user.name "github-actions[bot]"
-             git config user.email "github-actions[bot]@users.noreply.github.com"
-             git add activity.log
-             git commit -m "chore: auto commit $(date)" || echo "No changes to commit"
-             git pull --rebase origin ${{ github.ref_name }}
-             git push origin ${{ github.ref_name }}
+      - name: 提交并推送
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add activity.log
+          git commit -m "chore: auto commit $(date)" || echo "No changes to commit"
+          git pull --rebase origin "${{ github.ref_name }}"
+          git push origin "${{ github.ref_name }}"

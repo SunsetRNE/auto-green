@@ -1,3 +1,11 @@
+# ============================================================
+# 智能绿墙-图案完全体（重构修复版）
+# 功能：三种模式控制贡献图
+#   1) 过去提交填充模式：按颜色级别回填过去日期
+#   2) 未来重复提交模式：未来每天按颜色级别重复提交
+#   3) 未来图案提交模式：按图案码（0-4）绘制贡献图图案
+# 触发：Actions 页面手动触发（workflow_dispatch）
+# ============================================================
 name: 智能绿墙-图案完全体
 
 on:
@@ -12,7 +20,7 @@ on:
         required: true
         default: ''
       github_username:
-        description: 您的GitHub用户名（若勾选“从账号创建开始”则必须填写）
+        description: 您的GitHub用户名（若勾选"从账号创建开始"则必须填写）
         required: false
         default: ''
       mode:
@@ -103,6 +111,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 安装必要工具 (jq)
+        run: sudo apt-get update && sudo apt-get install -y jq
+
       - name: 配置Git用户
         run: |
           git config user.name "${{ github.event.inputs.git_user_name }}"
@@ -129,7 +140,7 @@ jobs:
             exit 1
           fi
           CREATED_DATE=$(date -d "$CREATED_AT" +%Y-%m-%d)
-          echo "creation_date=$CREATED_DATE" >> $GITHUB_OUTPUT
+          echo "creation_date=$CREATED_DATE" >> "$GITHUB_OUTPUT"
 
       - name: 计算日期范围
         id: dates
@@ -147,7 +158,6 @@ jobs:
               START=$(date -d "today" +%Y-%m-%d)
             fi
           fi
-
           # 确定结束日期
           if [[ -n "${{ github.event.inputs.end_date }}" ]]; then
             END="${{ github.event.inputs.end_date }}"
@@ -158,15 +168,14 @@ jobs:
               END=$(date -d "today + 30 days" +%Y-%m-%d)
             fi
           fi
-
           date -d "$START" >/dev/null 2>&1 || { echo "无效开始日期"; exit 1; }
           date -d "$END" >/dev/null 2>&1 || { echo "无效结束日期"; exit 1; }
           if [[ "$START" > "$END" ]]; then
             echo "开始日期不能晚于结束日期"
             exit 1
           fi
-          echo "start=$START" >> $GITHUB_OUTPUT
-          echo "end=$END" >> $GITHUB_OUTPUT
+          echo "start=$START" >> "$GITHUB_OUTPUT"
+          echo "end=$END" >> "$GITHUB_OUTPUT"
 
       - name: 生成提交
         id: generate
@@ -181,7 +190,6 @@ jobs:
 
           # 预处理图案码（仅未来图案模式需要）
           if [[ "$MODE" == "未来图案提交填充模式" ]]; then
-            # 去除换行和空格，得到连续字符串
             PATTERN=$(echo "$PATTERN_RAW" | tr -d '\n' | tr -d ' ')
             if [[ -z "$PATTERN" ]]; then
               echo "❌ 未来图案模式必须提供图案码"
@@ -194,16 +202,15 @@ jobs:
           updated_days=0
           skipped_days=0
           future_blank_days=0
-
           current="$START"
           day_index=0
+
           while [[ "$current" != $(date -d "$END + 1 day" +%Y-%m-%d) ]]; do
             total_days=$((total_days + 1))
             commit_count=$(git log --after="$current 00:00:00" --before="$current 23:59:59" --oneline 2>/dev/null | wc -l)
 
             # 确定目标级别范围
             if [[ "$MODE" == "未来图案提交填充模式" ]]; then
-              # 从图案码取字符
               idx=$(( day_index % PATTERN_LEN ))
               ch="${PATTERN:$idx:1}"
               case "$ch" in
@@ -234,24 +241,18 @@ jobs:
               esac
             fi
 
-            # 处理空白目标但已有提交的情况
+            # 处理目标空白但已有提交的情况
             if [[ $min -eq 0 && $commit_count -gt 0 ]]; then
-              # 未来模式允许推迟到未来（但未来图案模式如何处理？我们同样推迟）
-              echo "日期 $current 已有提交，目标为空白，无法直接变为空白"
               if [[ "$MODE" != "过去提交填充模式" ]]; then
-                echo "将空白需求推迟到未来第一天"
+                echo "日期 $current 已有提交，目标为空白；未来日期将推迟空白需求"
                 future_blank_days=$((future_blank_days + 1))
-                skipped_days=$((skipped_days + 1))
-                day_index=$((day_index + 1))
-                current=$(date -d "$current + 1 day" +%Y-%m-%d)
-                continue
               else
-                echo "过去模式无法推迟，跳过该天"
-                skipped_days=$((skipped_days + 1))
-                day_index=$((day_index + 1))
-                current=$(date -d "$current + 1 day" +%Y-%m-%d)
-                continue
+                echo "日期 $current 已有提交，目标为空白；过去模式无法推迟，跳过该天"
               fi
+              skipped_days=$((skipped_days + 1))
+              day_index=$((day_index + 1))
+              current=$(date -d "$current + 1 day" +%Y-%m-%d)
+              continue
             fi
 
             # 如果已有提交已达到目标下限，则跳过
@@ -267,7 +268,6 @@ jobs:
             target=$(( RANDOM % (max - min + 1) + min ))
             needed=$(( target - commit_count ))
             echo "日期 $current 需要补充 $needed 次提交"
-
             if [[ "$DRY_RUN" == "true" ]]; then
               echo "干运行：将生成 $needed 次提交"
             else
@@ -288,19 +288,12 @@ jobs:
               done
               updated_days=$((updated_days + 1))
             fi
-
             day_index=$((day_index + 1))
             current=$(date -d "$current + 1 day" +%Y-%m-%d)
           done
 
-          # 处理推迟的空白需求（在未来日期生成空白提交，实际上无操作，因为空白=0次提交）
-          if [[ $future_blank_days -gt 0 && "$DRY_RUN" != "true" ]]; then
-            echo "将为 $future_blank_days 天未来空白生成空白日（无提交）"
-            # 无需实际提交，只需记录
-          fi
-
           echo "统计：总天数 $total_days，已达标跳过 $skipped_days，补充更新 $updated_days，推迟空白 $future_blank_days"
-          echo "updated=$updated_days" >> $GITHUB_OUTPUT
+          echo "updated=$updated_days" >> "$GITHUB_OUTPUT"
 
       - name: 推送更改
         if: github.event.inputs.dry_run == 'false' && steps.generate.outputs.updated > 0

@@ -23,8 +23,8 @@ jobs:
 
       - name: 提交并推送
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "SunsetRNE"
+          git config user.email "z100o190zgxc@163.com"
           git add activity.log
           git commit -m "chore: auto commit $(date)" || echo "No changes to commit"
           git pull --rebase origin "${{ github.ref_name }}"

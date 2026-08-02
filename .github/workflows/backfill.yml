@@ -72,7 +72,7 @@ jobs:
 
       - name: 获取账号创建日期（可选）
         id: account_creation
-        if: github.event.inputs.from_account_creation == true
+        if: github.event.inputs.from_account_creation == 'true'
         run: |
           USERNAME="${{ github.event.inputs.github_username }}"
           if [ -z "$USERNAME" ]; then
@@ -166,7 +166,7 @@ jobs:
           [ "$DRY_RUN" == "true" ] && echo "⚠️ 当前为干运行模式，未实际生成任何提交。"
 
       - name: 推送更改（非干运行且有新提交时）
-        if: github.event.inputs.dry_run == false && steps.generate.outputs.missing != '0'
+        if: github.event.inputs.dry_run == 'false' && steps.generate.outputs.missing != '0'
         run: |
           BRANCH="${{ github.ref_name }}"
           FORCE="${{ github.event.inputs.force_push }}"
@@ -185,7 +185,7 @@ jobs:
           fi
 
       - name: 无新提交时跳过推送
-        if: github.event.inputs.dry_run == false && steps.generate.outputs.missing == '0'
+        if: github.event.inputs.dry_run == 'false' && steps.generate.outputs.missing == '0'
         run: echo "✅ 没有发现缺失的日期，无需推送。"
 
       - name: 最终提示
